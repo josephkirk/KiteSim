@@ -21,6 +21,9 @@ add_executable(kite_sim_tests
     test_wind_model.cpp
     test_aerodynamics.cpp
     test_tether.cpp
+    test_dynamics.cpp
+    test_integration_engine.cpp
+    test_kite_simulator.cpp
     test_main.cpp
 )
 
