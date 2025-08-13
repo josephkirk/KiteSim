@@ -24,6 +24,7 @@ add_executable(kite_sim_tests
     test_dynamics.cpp
     test_integration_engine.cpp
     test_kite_simulator.cpp
+    test_stability_analysis.cpp
     test_main.cpp
 )
 
