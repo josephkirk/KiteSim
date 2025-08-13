@@ -18,6 +18,9 @@ add_executable(kite_sim_tests
     test_kite_state.cpp
     test_kite_geometry.cpp
     test_aero_coefficients.cpp
+    test_wind_model.cpp
+    test_aerodynamics.cpp
+    test_tether.cpp
     test_main.cpp
 )
 

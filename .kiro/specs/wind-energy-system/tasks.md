@@ -34,21 +34,38 @@
   - Write unit tests for coefficient interpolation accuracy and edge cases
   - _Requirements: 1.1, 1.3, 2.4_
 
-- [ ] 4. Create wind modeling system
+- [x] 4. Create wind modeling system
+
+
+
+
+
+
   - Implement WindModel base class with uniform wind field capability
   - Add wind shear modeling with power law and logarithmic profiles
   - Create WindVector class for wind velocity representation
-  - Write unit tests for wind field calculations and profile accuracy
   - _Requirements: 1.1, 1.3_
 
-- [ ] 5. Implement aerodynamics calculation module
+- [x] 5. Implement aerodynamics calculation module
+
+
+
+
+
+
   - Create AerodynamicsCalculator class with force and moment calculation
   - Implement angle of attack and sideslip angle computation from relative wind
   - Add aerodynamic force calculation using coefficient tables and dynamic pressure
   - Write unit tests comparing against analytical solutions for simple cases
   - _Requirements: 1.1, 1.2, 3.1_
 
-- [ ] 6. Develop tether mechanics system
+- [x] 6. Develop tether mechanics system
+
+
+
+
+
+
   - Implement TetherProperties class with length, mass, and elastic properties
   - Create TetherModel class for tension and constraint force calculation
   - Add support for both elastic and inelastic tether models
