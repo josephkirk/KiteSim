@@ -20,6 +20,43 @@ struct ControlInputs {
         : elevator(elev), rudder(rud), aileron(ail) {}
     
     bool isValid() const;
+    void reset();
+    
+    // Utility functions
+    double getMaxDeflection() const;
+    bool hasDeflection() const;
+    
+    // Constants
+    static constexpr double MAX_DEFLECTION = M_PI / 4; // 45 degrees max
+};
+
+/**
+ * @brief Control effectiveness parameters for different control surfaces
+ */
+struct ControlEffectiveness {
+    // Elevator effectiveness on lift, drag, and pitching moment
+    double elevator_cl_effectiveness = 0.5;   // ∂CL/∂δe per radian
+    double elevator_cd_effectiveness = 0.1;   // ∂CD/∂δe per radian  
+    double elevator_cm_effectiveness = -1.0;  // ∂CM/∂δe per radian
+    
+    // Rudder effectiveness on side force, drag, and yawing moment
+    double rudder_cy_effectiveness = 0.3;     // ∂CY/∂δr per radian
+    double rudder_cd_effectiveness = 0.05;    // ∂CD/∂δr per radian
+    double rudder_cn_effectiveness = -0.2;    // ∂CN/∂δr per radian
+    
+    // Aileron effectiveness on lift, drag, and rolling moment
+    double aileron_cl_effectiveness = 0.2;    // ∂CL/∂δa per radian
+    double aileron_cd_effectiveness = 0.05;   // ∂CD/∂δa per radian
+    double aileron_cl_effectiveness_roll = -0.3; // ∂CL_roll/∂δa per radian
+    
+    ControlEffectiveness() = default;
+    
+    bool isValid() const;
+    void reset();
+    
+    // Serialization
+    std::string toJson() const;
+    bool fromJson(const std::string& json_str);
 };
 
 /**
@@ -74,6 +111,9 @@ public:
     void setGeometry(const KiteGeometry& geometry);
     const KiteGeometry& getGeometry() const { return geometry_; }
     
+    void setControlEffectiveness(const ControlEffectiveness& effectiveness);
+    const ControlEffectiveness& getControlEffectiveness() const { return control_effectiveness_; }
+    
     // Main calculation interface
     AeroForces calculateForces(const KiteState& state, 
                               const WindVector& wind,
@@ -85,10 +125,15 @@ public:
     double calculateDynamicPressure(const Vector3& relative_wind) const;
     
     // Force and moment calculations
-    Vector3 calculateAerodynamicForce(double alpha, double beta, double delta,
+    Vector3 calculateAerodynamicForce(double alpha, double beta, const ControlInputs& controls,
                                      double dynamic_pressure) const;
-    Vector3 calculateAerodynamicMoment(double alpha, double beta, double delta,
+    Vector3 calculateAerodynamicMoment(double alpha, double beta, const ControlInputs& controls,
                                       double dynamic_pressure) const;
+    
+    // Control effectiveness calculations
+    double calculateControlEffectOnCL(const ControlInputs& controls) const;
+    double calculateControlEffectOnCD(const ControlInputs& controls) const;
+    double calculateControlEffectOnCM(const ControlInputs& controls) const;
     
     // Coordinate transformations
     Vector3 transformWindToBody(const Vector3& wind_vector, const Quaternion& attitude) const;
@@ -105,6 +150,7 @@ public:
 private:
     KiteGeometry geometry_;
     bool geometry_configured_;
+    ControlEffectiveness control_effectiveness_;
     
     // Helper functions
     double radToDeg(double rad) const { return rad * 180.0 / M_PI; }

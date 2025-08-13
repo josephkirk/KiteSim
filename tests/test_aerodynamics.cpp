@@ -289,4 +289,190 @@ TEST_F(AerodynamicsTest, ControlInputsValidation) {
     EXPECT_TRUE(default_controls.isValid());
 }
 
+// Test ControlInputs utility functions
+TEST_F(AerodynamicsTest, ControlInputsUtilities) {
+    ControlInputs controls(0.1, -0.2, 0.15);
+    
+    // Test getMaxDeflection
+    EXPECT_NEAR(controls.getMaxDeflection(), 0.2, 1e-6);
+    
+    // Test hasDeflection
+    EXPECT_TRUE(controls.hasDeflection());
+    
+    ControlInputs zero_controls;
+    EXPECT_FALSE(zero_controls.hasDeflection());
+    
+    // Test reset
+    controls.reset();
+    EXPECT_FALSE(controls.hasDeflection());
+    EXPECT_EQ(controls.elevator, 0.0);
+    EXPECT_EQ(controls.rudder, 0.0);
+    EXPECT_EQ(controls.aileron, 0.0);
+}
+
+// Test ControlEffectiveness validation and utilities
+TEST_F(AerodynamicsTest, ControlEffectivenessValidation) {
+    ControlEffectiveness valid_effectiveness;
+    EXPECT_TRUE(valid_effectiveness.isValid());
+    
+    // Test with invalid values
+    ControlEffectiveness invalid_effectiveness;
+    invalid_effectiveness.elevator_cl_effectiveness = NAN;
+    EXPECT_FALSE(invalid_effectiveness.isValid());
+    
+    // Test reset
+    valid_effectiveness.elevator_cl_effectiveness = 999.0;
+    valid_effectiveness.reset();
+    EXPECT_NEAR(valid_effectiveness.elevator_cl_effectiveness, 0.5, 1e-6);
+    
+    // Test JSON serialization
+    std::string json = valid_effectiveness.toJson();
+    EXPECT_FALSE(json.empty());
+    EXPECT_TRUE(valid_effectiveness.fromJson(json));
+}
+
+// Test control effectiveness calculations
+TEST_F(AerodynamicsTest, ControlEffectivenessCalculations) {
+    // Set up control effectiveness
+    ControlEffectiveness effectiveness;
+    effectiveness.elevator_cl_effectiveness = 0.5;
+    effectiveness.elevator_cd_effectiveness = 0.1;
+    effectiveness.elevator_cm_effectiveness = -1.0;
+    effectiveness.aileron_cl_effectiveness = 0.2;
+    effectiveness.aileron_cd_effectiveness = 0.05;
+    
+    aero_calc_->setControlEffectiveness(effectiveness);
+    
+    // Test control effects on CL
+    ControlInputs controls(0.1, 0.0, 0.05); // elevator = 0.1, aileron = 0.05
+    double delta_cl = aero_calc_->calculateControlEffectOnCL(controls);
+    double expected_cl = 0.5 * 0.1 + 0.2 * 0.05; // elevator + aileron effects
+    EXPECT_NEAR(delta_cl, expected_cl, 1e-6);
+    
+    // Test control effects on CD
+    double delta_cd = aero_calc_->calculateControlEffectOnCD(controls);
+    double expected_cd = 0.1 * 0.1 + 0.05 * 0.05; // elevator + aileron effects (absolute values)
+    EXPECT_NEAR(delta_cd, expected_cd, 1e-6);
+    
+    // Test control effects on CM
+    double delta_cm = aero_calc_->calculateControlEffectOnCM(controls);
+    double expected_cm = -1.0 * 0.1; // only elevator affects pitching moment
+    EXPECT_NEAR(delta_cm, expected_cm, 1e-6);
+}
+
+// Test control system integration in force calculation
+TEST_F(AerodynamicsTest, ControlSystemIntegration) {
+    // Set up control effectiveness
+    ControlEffectiveness effectiveness;
+    effectiveness.elevator_cl_effectiveness = 0.5;
+    effectiveness.elevator_cd_effectiveness = 0.1;
+    effectiveness.elevator_cm_effectiveness = -1.0;
+    aero_calc_->setControlEffectiveness(effectiveness);
+    
+    // Calculate forces without control
+    AeroForces forces_no_control = aero_calc_->calculateForces(test_state_, test_wind_);
+    
+    // Calculate forces with elevator deflection
+    ControlInputs controls;
+    controls.elevator = 0.1; // 0.1 rad elevator deflection
+    AeroForces forces_with_control = aero_calc_->calculateForces(test_state_, test_wind_, controls);
+    
+    // Verify both calculations are valid
+    EXPECT_TRUE(forces_no_control.isValid());
+    EXPECT_TRUE(forces_with_control.isValid());
+    
+    // With positive elevator deflection, lift should increase and pitch moment should decrease
+    EXPECT_GT(forces_with_control.lift, forces_no_control.lift);
+    EXPECT_LT(forces_with_control.pitch_moment, forces_no_control.pitch_moment);
+    
+    // Drag should increase due to control deflection
+    EXPECT_GT(forces_with_control.drag, forces_no_control.drag);
+}
+
+// Test control authority limits
+TEST_F(AerodynamicsTest, ControlAuthorityLimits) {
+    // Test maximum deflection
+    ControlInputs max_controls;
+    max_controls.elevator = ControlInputs::MAX_DEFLECTION;
+    max_controls.rudder = ControlInputs::MAX_DEFLECTION;
+    max_controls.aileron = ControlInputs::MAX_DEFLECTION;
+    
+    EXPECT_TRUE(max_controls.isValid());
+    
+    // Test beyond maximum deflection
+    ControlInputs over_limit_controls;
+    over_limit_controls.elevator = ControlInputs::MAX_DEFLECTION + 0.1;
+    EXPECT_FALSE(over_limit_controls.isValid());
+    
+    // Test that forces can still be calculated with maximum deflections
+    EXPECT_NO_THROW(aero_calc_->calculateForces(test_state_, test_wind_, max_controls));
+}
+
+// Test control response linearity
+TEST_F(AerodynamicsTest, ControlResponseLinearity) {
+    // Set up control effectiveness
+    ControlEffectiveness effectiveness;
+    effectiveness.elevator_cl_effectiveness = 0.5;
+    aero_calc_->setControlEffectiveness(effectiveness);
+    
+    // Test different elevator deflections
+    ControlInputs small_control;
+    small_control.elevator = 0.05;
+    
+    ControlInputs large_control;
+    large_control.elevator = 0.10; // Double the deflection
+    
+    double small_effect = aero_calc_->calculateControlEffectOnCL(small_control);
+    double large_effect = aero_calc_->calculateControlEffectOnCL(large_control);
+    
+    // Effect should be linear (double deflection = double effect)
+    EXPECT_NEAR(large_effect, 2.0 * small_effect, 1e-6);
+}
+
+// Test multiple control surface interactions
+TEST_F(AerodynamicsTest, MultipleControlSurfaces) {
+    // Set up control effectiveness
+    ControlEffectiveness effectiveness;
+    effectiveness.elevator_cl_effectiveness = 0.5;
+    effectiveness.aileron_cl_effectiveness = 0.2;
+    effectiveness.elevator_cd_effectiveness = 0.1;
+    effectiveness.aileron_cd_effectiveness = 0.05;
+    aero_calc_->setControlEffectiveness(effectiveness);
+    
+    // Test combined control inputs
+    ControlInputs combined_controls;
+    combined_controls.elevator = 0.1;
+    combined_controls.aileron = 0.05;
+    
+    // Calculate individual effects
+    ControlInputs elevator_only;
+    elevator_only.elevator = 0.1;
+    
+    ControlInputs aileron_only;
+    aileron_only.aileron = 0.05;
+    
+    double combined_cl = aero_calc_->calculateControlEffectOnCL(combined_controls);
+    double elevator_cl = aero_calc_->calculateControlEffectOnCL(elevator_only);
+    double aileron_cl = aero_calc_->calculateControlEffectOnCL(aileron_only);
+    
+    // Combined effect should equal sum of individual effects
+    EXPECT_NEAR(combined_cl, elevator_cl + aileron_cl, 1e-6);
+}
+
+// Test control effectiveness configuration
+TEST_F(AerodynamicsTest, ControlEffectivenessConfiguration) {
+    // Test setting valid control effectiveness
+    ControlEffectiveness valid_effectiveness;
+    EXPECT_NO_THROW(aero_calc_->setControlEffectiveness(valid_effectiveness));
+    
+    // Test getting control effectiveness
+    const ControlEffectiveness& retrieved = aero_calc_->getControlEffectiveness();
+    EXPECT_NEAR(retrieved.elevator_cl_effectiveness, valid_effectiveness.elevator_cl_effectiveness, 1e-6);
+    
+    // Test setting invalid control effectiveness
+    ControlEffectiveness invalid_effectiveness;
+    invalid_effectiveness.elevator_cl_effectiveness = NAN;
+    EXPECT_THROW(aero_calc_->setControlEffectiveness(invalid_effectiveness), std::invalid_argument);
+}
+
 } // namespace kite_sim

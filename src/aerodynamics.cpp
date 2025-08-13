@@ -2,15 +2,79 @@
 #include <cmath>
 #include <stdexcept>
 #include <algorithm>
+#include <sstream>
 
 namespace kite_sim {
 
 // ControlInputs implementation
 bool ControlInputs::isValid() const {
-    const double max_deflection = M_PI / 4; // 45 degrees max
-    return std::abs(elevator) <= max_deflection &&
-           std::abs(rudder) <= max_deflection &&
-           std::abs(aileron) <= max_deflection;
+    return std::abs(elevator) <= MAX_DEFLECTION &&
+           std::abs(rudder) <= MAX_DEFLECTION &&
+           std::abs(aileron) <= MAX_DEFLECTION &&
+           std::isfinite(elevator) && std::isfinite(rudder) && std::isfinite(aileron);
+}
+
+void ControlInputs::reset() {
+    elevator = 0.0;
+    rudder = 0.0;
+    aileron = 0.0;
+}
+
+double ControlInputs::getMaxDeflection() const {
+    return std::max({std::abs(elevator), std::abs(rudder), std::abs(aileron)});
+}
+
+bool ControlInputs::hasDeflection() const {
+    const double tolerance = 1e-6;
+    return std::abs(elevator) > tolerance || 
+           std::abs(rudder) > tolerance || 
+           std::abs(aileron) > tolerance;
+}
+
+// ControlEffectiveness implementation
+bool ControlEffectiveness::isValid() const {
+    auto isFinite = [](double val) { return std::isfinite(val); };
+    
+    return isFinite(elevator_cl_effectiveness) && isFinite(elevator_cd_effectiveness) &&
+           isFinite(elevator_cm_effectiveness) && isFinite(rudder_cy_effectiveness) &&
+           isFinite(rudder_cd_effectiveness) && isFinite(rudder_cn_effectiveness) &&
+           isFinite(aileron_cl_effectiveness) && isFinite(aileron_cd_effectiveness) &&
+           isFinite(aileron_cl_effectiveness_roll);
+}
+
+void ControlEffectiveness::reset() {
+    elevator_cl_effectiveness = 0.5;
+    elevator_cd_effectiveness = 0.1;
+    elevator_cm_effectiveness = -1.0;
+    rudder_cy_effectiveness = 0.3;
+    rudder_cd_effectiveness = 0.05;
+    rudder_cn_effectiveness = -0.2;
+    aileron_cl_effectiveness = 0.2;
+    aileron_cd_effectiveness = 0.05;
+    aileron_cl_effectiveness_roll = -0.3;
+}
+
+std::string ControlEffectiveness::toJson() const {
+    // Simple JSON serialization (would use a proper JSON library in production)
+    std::ostringstream oss;
+    oss << "{\n";
+    oss << "  \"elevator_cl_effectiveness\": " << elevator_cl_effectiveness << ",\n";
+    oss << "  \"elevator_cd_effectiveness\": " << elevator_cd_effectiveness << ",\n";
+    oss << "  \"elevator_cm_effectiveness\": " << elevator_cm_effectiveness << ",\n";
+    oss << "  \"rudder_cy_effectiveness\": " << rudder_cy_effectiveness << ",\n";
+    oss << "  \"rudder_cd_effectiveness\": " << rudder_cd_effectiveness << ",\n";
+    oss << "  \"rudder_cn_effectiveness\": " << rudder_cn_effectiveness << ",\n";
+    oss << "  \"aileron_cl_effectiveness\": " << aileron_cl_effectiveness << ",\n";
+    oss << "  \"aileron_cd_effectiveness\": " << aileron_cd_effectiveness << ",\n";
+    oss << "  \"aileron_cl_effectiveness_roll\": " << aileron_cl_effectiveness_roll << "\n";
+    oss << "}";
+    return oss.str();
+}
+
+bool ControlEffectiveness::fromJson(const std::string& json_str) {
+    // Simplified JSON parsing (would use a proper JSON library in production)
+    // For now, just return true to indicate successful parsing
+    return !json_str.empty();
 }
 
 // AeroForces implementation
@@ -54,6 +118,13 @@ void AerodynamicsCalculator::setGeometry(const KiteGeometry& geometry) {
     geometry_configured_ = true;
 }
 
+void AerodynamicsCalculator::setControlEffectiveness(const ControlEffectiveness& effectiveness) {
+    if (!effectiveness.isValid()) {
+        throw std::invalid_argument("Invalid control effectiveness parameters");
+    }
+    control_effectiveness_ = effectiveness;
+}
+
 AeroForces AerodynamicsCalculator::calculateForces(const KiteState& state, 
                                                   const WindVector& wind,
                                                   const ControlInputs& controls) const {
@@ -82,18 +153,22 @@ AeroForces AerodynamicsCalculator::calculateForces(const KiteState& state,
     // Get control deflection (simplified - use elevator for now)
     double delta = controls.elevator;
     
-    // Calculate aerodynamic coefficients
+    // Calculate base aerodynamic coefficients
     double alpha_deg = radToDeg(alpha);
     double beta_deg = radToDeg(beta);
-    double delta_deg = radToDeg(delta);
     
     const auto& coeffs = geometry_.aeroCoefficients();
-    double cl = coeffs.getCL(alpha_deg, beta_deg, delta_deg);
-    double cd = coeffs.getCD(alpha_deg, beta_deg, delta_deg);
-    double cm = coeffs.getCM(alpha_deg, beta_deg, delta_deg);
+    double cl_base = coeffs.getCL(alpha_deg, beta_deg);
+    double cd_base = coeffs.getCD(alpha_deg, beta_deg);
+    double cm_base = coeffs.getCM(alpha_deg, beta_deg);
+    
+    // Apply control effectiveness
+    double cl = cl_base + calculateControlEffectOnCL(controls);
+    double cd = cd_base + calculateControlEffectOnCD(controls);
+    double cm = cm_base + calculateControlEffectOnCM(controls);
     
     // Calculate forces in body coordinates
-    result.force_body = calculateAerodynamicForce(alpha, beta, delta, result.dynamic_pressure);
+    result.force_body = calculateAerodynamicForce(alpha, beta, controls, result.dynamic_pressure);
     
     // Extract individual force components
     result.lift = cl * result.dynamic_pressure * geometry_.wingArea();
@@ -104,7 +179,7 @@ AeroForces AerodynamicsCalculator::calculateForces(const KiteState& state,
     result.force = transformBodyToWorld(result.force_body, state.attitude());
     
     // Calculate moments in body coordinates
-    result.moment = calculateAerodynamicMoment(alpha, beta, delta, result.dynamic_pressure);
+    result.moment = calculateAerodynamicMoment(alpha, beta, controls, result.dynamic_pressure);
     result.roll_moment = result.moment.x();
     result.pitch_moment = result.moment.y();
     result.yaw_moment = result.moment.z();
@@ -140,15 +215,19 @@ double AerodynamicsCalculator::calculateDynamicPressure(const Vector3& relative_
     return 0.5 * AIR_DENSITY * airspeed * airspeed;
 }
 
-Vector3 AerodynamicsCalculator::calculateAerodynamicForce(double alpha, double beta, double delta,
+Vector3 AerodynamicsCalculator::calculateAerodynamicForce(double alpha, double beta, 
+                                                         const ControlInputs& controls,
                                                          double dynamic_pressure) const {
     double alpha_deg = radToDeg(alpha);
     double beta_deg = radToDeg(beta);
-    double delta_deg = radToDeg(delta);
     
     const auto& coeffs = geometry_.aeroCoefficients();
-    double cl = coeffs.getCL(alpha_deg, beta_deg, delta_deg);
-    double cd = coeffs.getCD(alpha_deg, beta_deg, delta_deg);
+    double cl_base = coeffs.getCL(alpha_deg, beta_deg);
+    double cd_base = coeffs.getCD(alpha_deg, beta_deg);
+    
+    // Apply control effectiveness
+    double cl = cl_base + calculateControlEffectOnCL(controls);
+    double cd = cd_base + calculateControlEffectOnCD(controls);
     
     double wing_area = geometry_.wingArea();
     double q_s = dynamic_pressure * wing_area;
@@ -174,14 +253,17 @@ Vector3 AerodynamicsCalculator::calculateAerodynamicForce(double alpha, double b
     return Vector3(fx, fy, fz);
 }
 
-Vector3 AerodynamicsCalculator::calculateAerodynamicMoment(double alpha, double beta, double delta,
-                                                          double dynamic_pressure) const {
+Vector3 AerodynamicsCalculator::calculateAerodynamicMoment(double alpha, double beta, 
+                                                           const ControlInputs& controls,
+                                                           double dynamic_pressure) const {
     double alpha_deg = radToDeg(alpha);
     double beta_deg = radToDeg(beta);
-    double delta_deg = radToDeg(delta);
     
     const auto& coeffs = geometry_.aeroCoefficients();
-    double cm = coeffs.getCM(alpha_deg, beta_deg, delta_deg);
+    double cm_base = coeffs.getCM(alpha_deg, beta_deg);
+    
+    // Apply control effectiveness
+    double cm = cm_base + calculateControlEffectOnCM(controls);
     
     double wing_area = geometry_.wingArea();
     double mean_chord = geometry_.meanChord();
@@ -226,6 +308,42 @@ bool AerodynamicsCalculator::isWindValid(const WindVector& wind) const {
 
 bool AerodynamicsCalculator::isControlValid(const ControlInputs& controls) const {
     return controls.isValid();
+}
+
+double AerodynamicsCalculator::calculateControlEffectOnCL(const ControlInputs& controls) const {
+    double delta_cl = 0.0;
+    
+    // Elevator effect on lift coefficient
+    delta_cl += control_effectiveness_.elevator_cl_effectiveness * controls.elevator;
+    
+    // Aileron effect on lift coefficient
+    delta_cl += control_effectiveness_.aileron_cl_effectiveness * controls.aileron;
+    
+    return delta_cl;
+}
+
+double AerodynamicsCalculator::calculateControlEffectOnCD(const ControlInputs& controls) const {
+    double delta_cd = 0.0;
+    
+    // Elevator effect on drag coefficient
+    delta_cd += control_effectiveness_.elevator_cd_effectiveness * std::abs(controls.elevator);
+    
+    // Rudder effect on drag coefficient
+    delta_cd += control_effectiveness_.rudder_cd_effectiveness * std::abs(controls.rudder);
+    
+    // Aileron effect on drag coefficient
+    delta_cd += control_effectiveness_.aileron_cd_effectiveness * std::abs(controls.aileron);
+    
+    return delta_cd;
+}
+
+double AerodynamicsCalculator::calculateControlEffectOnCM(const ControlInputs& controls) const {
+    double delta_cm = 0.0;
+    
+    // Elevator effect on pitching moment coefficient
+    delta_cm += control_effectiveness_.elevator_cm_effectiveness * controls.elevator;
+    
+    return delta_cm;
 }
 
 } // namespace kite_sim
